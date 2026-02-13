@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+wandb/
+logs/
+MUJOCO_LOG.TXT
