@@ -1,0 +1,26 @@
+Traceback (most recent call last):
+  File "/home/mateus/rc_humanoid/.venv/bin/train", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/mateus/rc_humanoid/.venv/lib/python3.11/site-packages/mjlab/scripts/train.py", line 249, in main
+    launch_training(task_id=chosen_task, args=args)
+  File "/home/mateus/rc_humanoid/.venv/lib/python3.11/site-packages/mjlab/scripts/train.py", line 200, in launch_training
+    run_train(task_id, args, log_dir)
+  File "/home/mateus/rc_humanoid/.venv/lib/python3.11/site-packages/mjlab/scripts/train.py", line 170, in run_train
+    runner.learn(
+  File "/home/mateus/rc_humanoid/.venv/lib/python3.11/site-packages/rsl_rl/runners/on_policy_runner.py", line 105, in learn
+    obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mateus/rc_humanoid/.venv/lib/python3.11/site-packages/mjlab/rl/vecenv_wrapper.py", line 77, in step
+    obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
+                                                   ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mateus/rc_humanoid/.venv/lib/python3.11/site-packages/mjlab/envs/manager_based_rl_env.py", line 339, in step
+    self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mateus/rc_humanoid/.venv/lib/python3.11/site-packages/mjlab/managers/reward_manager.py", line 124, in compute
+    value = term_cfg.func(self._env, **term_cfg.params) * term_cfg.weight * scale
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mateus/rc_humanoid/.venv/lib/python3.11/site-packages/mjlab/tasks/velocity/mdp/rewards.py", line 372, in __call__
+    return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
+                                 ~~~~~~~~~~~~~~^~~~~~~~~~
+RuntimeError: The size of tensor a (23) must match the size of tensor b (0) at non-singleton dimension 1

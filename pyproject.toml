@@ -1,0 +1,30 @@
+[project]
+name = "rc-humanoid"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gymnasium>=1.2.3",
+    "imageio>=2.37.2",
+    "mujoco>=3.4.0",
+    "numpy>=2.4.2",
+    "stable-baselines3>=2.7.1",
+    "tensorboard>=2.20.0",
+    "wandb>=0.24.2",
+    "mjlab>=0.1.0",
+    "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.entry-points."mjlab.tasks"]
+booster_t1 = "mjlab_task"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mjlab_task"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
