@@ -14,6 +14,7 @@ dependencies = [
     "wandb>=0.24.2",
     "mjlab>=0.1.0",
     "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp",
+    "ipdb>=0.13.13",
 ]
 
 [build-system]

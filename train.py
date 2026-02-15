@@ -39,9 +39,10 @@ def main():
     parser.add_argument("--n_envs", type=int, default=None, help="Ignored (handled by env_cfg)")
     parser.add_argument("--test", action="store_true", help="Play trained policy")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a specific checkpoint file")
+    parser.add_argument("--task", type=str, default="T1-Reach-v0", help="Task ID to train or play")
     args, unknown = parser.parse_known_args()
 
-    task_name = "Mjlab-Booster-v0"
+    task_name = args.task
     experiment_name = "booster_t1_velocity"
     
     if args.test:
@@ -55,7 +56,7 @@ def main():
                 sys.exit(1)
         
         print(f"Playing task {task_name} using checkpoint {checkpoint}...")
-        cmd = ["uv", "run", "play", task_name, "--checkpoint-file", checkpoint]
+        cmd = ["uv", "run", "play", task_name, "--checkpoint-file", checkpoint, "--viewer=viser"]
     else:
         print(f"Training task {task_name}...")
         # Assuming 'train' script is available in the environment via mjlab
