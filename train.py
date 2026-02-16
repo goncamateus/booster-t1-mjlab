@@ -53,12 +53,15 @@ def main():
         default=16,
         help="Number of parallel environments for training (ignored in play mode)",
     )
+    parser.add_argument(
+        "--video",
+        action="store_true",
+        help="Run training with video recording enabled (ignored in play mode)",
+    )
     args, unknown = parser.parse_known_args()
 
     task_name = args.task
-    experiment_name = (
-        task_name.replace("-v0", "") + f"{time.strftime('-%Y%m%d-%H%M%S')}"
-    )
+    experiment_name = task_name.replace("-v0", "")
 
     if args.test:
         checkpoint = args.checkpoint
@@ -80,12 +83,20 @@ def main():
             task_name,
             "--checkpoint-file",
             checkpoint,
-            "--viewer=viser",
+            "--viewer=native",
         ]
     else:
         print(f"Training task {task_name}...")
         # Assuming 'train' script is available in the environment via mjlab
-        cmd = ["uv", "run", "train", task_name, "--video=True", f"--env.scene.num-envs={args.num_envs}"]
+        cmd = [
+            "uv",
+            "run",
+            "train",
+            task_name,
+            f"--env.scene.num-envs={args.num_envs}",
+        ]
+        if args.video:
+            cmd.append("--video=True")
 
     # Pass unknown args to mjlab if needed, but for now kept simple
     if unknown:

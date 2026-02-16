@@ -72,10 +72,10 @@ class T1StandCfgGen:
 
     def setup_rewards(self):
         """Configure rewards for the Booster T1 environment."""
-        self.cfg.rewards["pose"].params["std_standing"] = {".*": 0.1}
+        self.cfg.rewards["pose"].params["std_standing"] = {".*": 1}
         self.cfg.rewards["pose"].params["std_walking"] = {".*": 0}
         self.cfg.rewards["pose"].params["std_running"] = {".*": 0}
-        self.cfg.rewards["pose"].weight = 1
+        self.cfg.rewards["pose"].weight = 10
         self.cfg.rewards["upright"].params["asset_cfg"].body_names = ("Trunk",)
         self.cfg.rewards["upright"].weight = 10
         self.cfg.rewards = {key: self.cfg.rewards[key] for key in self.reward_set}
