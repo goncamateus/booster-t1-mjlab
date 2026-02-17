@@ -9,7 +9,7 @@ register_mjlab_task(
     task_id="T1-Stand-v0",
     env_cfg=stand_env_cfg(),
     play_env_cfg=stand_env_cfg(play=True),
-    rl_cfg=booster_t1_ppo_runner_cfg(exp_name="T1-Stand-PPO", num_iterations=1000),
+    rl_cfg=booster_t1_ppo_runner_cfg(exp_name="T1-Stand-PPO", num_iterations=3000),
     runner_cls=VelocityOnPolicyRunner,
 )
 

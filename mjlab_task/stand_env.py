@@ -19,7 +19,10 @@ def torso_height(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
-    return asset.data.body_com_pos_w[:, asset_cfg.body_ids, 2].sum()
+    return (
+        asset.data.body_com_pos_w[:, asset_cfg.body_ids, 2].mean()
+        - env.scene.entities["robot"].cfg.init_state.pos[2]
+    )
 
 
 def feet_on_ground(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
@@ -115,7 +118,7 @@ class T1StandCfgGen:
         self.cfg.rewards["pose"].params["std_standing"] = {".*": 10}
         self.cfg.rewards["pose"].params["std_walking"] = {".*": 0}
         self.cfg.rewards["pose"].params["std_running"] = {".*": 0}
-        self.cfg.rewards["pose"].weight = 10
+        self.cfg.rewards["pose"].weight = 100
 
     def _setup_body_rewards(self):
         """Configure body-related rewards for the Booster T1 environment."""
@@ -123,7 +126,7 @@ class T1StandCfgGen:
         self.cfg.rewards["upright"].weight = 10
 
         self.cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("Trunk",)
-        self.cfg.rewards["body_ang_vel"].weight = 10
+        self.cfg.rewards["body_ang_vel"].weight = -1
 
     def _setup_velocity_tracking_rewards(self):
         """Configure velocity tracking rewards for the Booster T1 environment."""
@@ -134,7 +137,7 @@ class T1StandCfgGen:
         """Configure the feet on ground reward for the Booster T1 environment."""
         self.cfg.rewards["torso_height"] = RewardTermCfg(
             func=torso_height,
-            weight=10.0,
+            weight=10,
             params={
                 "asset_cfg": SceneEntityCfg(
                     "robot", joint_names=(".*",), body_names=("Trunk",)
@@ -146,7 +149,7 @@ class T1StandCfgGen:
         """Configure the feet on ground reward for the Booster T1 environment."""
         self.cfg.rewards["feet_on_ground"] = RewardTermCfg(
             func=feet_on_ground,
-            weight=1.0,
+            weight=10.0,
             params={"sensor_name": "feet_ground_contact"},
         )
 
