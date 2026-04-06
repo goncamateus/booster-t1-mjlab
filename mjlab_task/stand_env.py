@@ -1,11 +1,13 @@
+import math
+
 import torch
 from mjlab.entity import Entity
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.managers import ObservationGroupCfg
-from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor.contact_sensor import ContactMatch, ContactSensor, ContactSensorCfg
 from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
@@ -30,6 +32,36 @@ def feet_on_ground(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
     sensor_data = sensor.data
     assert sensor_data.found is not None
     return (sensor_data.found > 0).float().sum(dim=1)
+
+
+def stable_standing_bonus(
+    env: ManagerBasedRlEnv,
+    min_upright_cos: float,
+    min_torso_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward the agent when it remains upright and keeps the torso sufficiently high."""
+    asset: Entity = env.scene[asset_cfg.name]
+    torso_height_w = asset.data.body_com_pos_w[:, asset_cfg.body_ids, 2].mean(dim=1)
+    projected_gravity = mdp.projected_gravity(env)
+    upright_enough = -projected_gravity[:, 2] >= min_upright_cos
+    high_enough = torso_height_w >= min_torso_height
+    return (upright_enough & high_enough).float()
+
+
+def stability_violation_termination(
+    env: ManagerBasedRlEnv,
+    min_upright_cos: float,
+    min_torso_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terminate the episode immediately when strict standing thresholds are violated."""
+    return stable_standing_bonus(
+        env=env,
+        min_upright_cos=min_upright_cos,
+        min_torso_height=min_torso_height,
+        asset_cfg=asset_cfg,
+    ) < 0.5
 
 
 class T1StandCfgGen:
@@ -73,12 +105,10 @@ class T1StandCfgGen:
         "soft_landing",
         "dof_pos_limits",
         "action_rate_l2",
-        # Set weights
-        "track_linear_velocity",
-        "track_angular_velocity",
         # New
         "feet_on_ground",
         "torso_height",
+        "stable_standing",
     }
 
     def __init__(self):
@@ -128,11 +158,6 @@ class T1StandCfgGen:
         self.cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("Trunk",)
         self.cfg.rewards["body_ang_vel"].weight = -1
 
-    def _setup_velocity_tracking_rewards(self):
-        """Configure velocity tracking rewards for the Booster T1 environment."""
-        self.cfg.rewards["track_linear_velocity"].weight = -1
-        self.cfg.rewards["track_angular_velocity"].weight = -1
-
     def _setup_torso_reward(self):
         """Configure the feet on ground reward for the Booster T1 environment."""
         self.cfg.rewards["torso_height"] = RewardTermCfg(
@@ -153,13 +178,41 @@ class T1StandCfgGen:
             params={"sensor_name": "feet_ground_contact"},
         )
 
+    def _setup_stable_standing_reward(self):
+        """Add a binary bonus for continuously satisfying strict standing thresholds."""
+        max_tilt_rad = 0.12
+        self.cfg.rewards["stable_standing"] = RewardTermCfg(
+            func=stable_standing_bonus,
+            weight=20.0,
+            params={
+                "min_upright_cos": math.cos(max_tilt_rad),
+                "min_torso_height": 0.60,
+                "asset_cfg": SceneEntityCfg("robot", body_names=("Trunk",)),
+            },
+        )
+
+    def setup_terminations(self):
+        """Terminate episodes immediately when strict standing thresholds are violated."""
+        max_tilt_rad = 0.12
+        self.cfg.terminations = {
+            "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
+            "stability_violation": TerminationTermCfg(
+                func=stability_violation_termination,
+                params={
+                    "min_upright_cos": math.cos(max_tilt_rad),
+                    "min_torso_height": 0.60,
+                    "asset_cfg": SceneEntityCfg("robot", body_names=("Trunk",)),
+                },
+            ),
+        }
+
     def setup_rewards(self):
         """Configure rewards for the Booster T1 environment."""
         self._setup_pose_reward()
         self._setup_body_rewards()
-        self._setup_velocity_tracking_rewards()
         self._setup_torso_reward()
         self._setup_feet_on_ground_reward()
+        self._setup_stable_standing_reward()
         self.cfg.rewards = {key: self.cfg.rewards[key] for key in self.reward_set}
 
     def choose_observation(self):
@@ -197,12 +250,15 @@ class T1StandCfgGen:
         self.setup_scene()
         self.setup_viewer()
         self.setup_observations()
+        self.setup_terminations()
         self.setup_rewards()
         joint_pos_action = self.cfg.actions["joint_pos"]
         joint_pos_action.scale = 1.0
-        self.cfg.curriculum: dict[str, CurriculumTermCfg] = {}
+        self.cfg.curriculum = {}
         if play:
             self.cfg.episode_length_s = 20.0  # longer for play
+        else:
+            self.cfg.episode_length_s = 5.0
         return self.cfg
 
 

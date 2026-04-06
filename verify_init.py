@@ -1,54 +1,53 @@
-import torch
 from mjlab_task.stand_env import stand_env_cfg
-from mjlab.envs import ManagerBasedRlEnv
-import gc
+
+
+def assert_true(condition: bool, message: str):
+    if not condition:
+        raise AssertionError(message)
 
 
 def main():
-    # Setup environment
-    cfg = stand_env_cfg()
-    cfg.scene.num_envs = 10  # Standard for verification
-    cfg.viewer.enabled = (
-        True  # Enable viewer for debugging if needed, but here we just want data
+    train_cfg = stand_env_cfg(play=False)
+    play_cfg = stand_env_cfg(play=True)
+
+    print("=== T1 Stand Configuration Checks ===")
+
+    reward_keys = set(train_cfg.rewards.keys())
+    print(f"Reward terms: {sorted(reward_keys)}")
+    assert_true(
+        "track_linear_velocity" not in reward_keys,
+        "track_linear_velocity must be disabled for pure standing.",
+    )
+    assert_true(
+        "track_angular_velocity" not in reward_keys,
+        "track_angular_velocity must be disabled for pure standing.",
+    )
+    assert_true(
+        "stable_standing" in reward_keys,
+        "stable_standing reward must be active.",
     )
 
-    # Enable viewer for debugging if needed, but here we just want data
-    env = ManagerBasedRlEnv(cfg, device="cuda:0")
+    term_keys = set(train_cfg.terminations.keys())
+    print(f"Termination terms: {sorted(term_keys)}")
+    assert_true("time_out" in term_keys, "time_out termination must be defined.")
+    assert_true(
+        "stability_violation" in term_keys,
+        "stability_violation termination must be defined.",
+    )
 
-    # Reset
-    print("Resetting environment...")
-    obs, extras = env.reset()
+    print(f"Train episode length: {train_cfg.episode_length_s}")
+    assert_true(
+        abs(float(train_cfg.episode_length_s) - 5.0) < 1e-6,
+        "Training episode length must be exactly 5.0 seconds.",
+    )
 
-    # Print robot info
-    robot = env.scene.entities["robot"]
+    print(f"Play episode length: {play_cfg.episode_length_s}")
+    assert_true(
+        abs(float(play_cfg.episode_length_s) - 20.0) < 1e-6,
+        "Play episode length must remain 20.0 seconds.",
+    )
 
-    # Check root position
-    root_pos = robot.data.geom_pos_w[0].cpu().numpy()
-    print(f"Robot root position: {root_pos}", flush=True)
-
-    # Check foot positions
-    # Need to find the site indices. Sites are in robot.data.site_pos_w.
-    # We can use robot.site_names.
-    foot_site_names = ["left_foot", "right_foot"]
-    foot_indices = [robot.site_names.index(name) for name in foot_site_names]
-
-    env_origins = env.scene.env_origins[0].cpu().numpy()
-    print(f"Environment origin: {env_origins}", flush=True)
-    for i in range(10):
-        # Step once
-        env.step(
-            torch.ones(cfg.scene.num_envs, env.action_space.shape[1], device="cpu")
-        )
-        root_pos = robot.data.geom_pos_w[0].cpu().numpy()
-        foot_positions = robot.data.site_pos_w[0, foot_indices].cpu().numpy()
-
-        print(
-            f"Step {i}: Root Z={root_pos[2]}, Foot Zs={foot_positions[:, 2]}",
-            flush=True,
-        )
-
-    del env
-    gc.collect()
+    print("All stand-task checks passed.")
 
 
 if __name__ == "__main__":
