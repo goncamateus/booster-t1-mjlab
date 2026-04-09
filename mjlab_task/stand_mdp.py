@@ -19,6 +19,21 @@ _UP_VEC = torch.tensor([0.0, 0.0, -1.0])
 
 
 # ---------------------------------------------------------------------------
+# Helper: upright gate used by posture reward
+# ---------------------------------------------------------------------------
+
+def _is_upright(
+    asset: Entity,
+    orientation_threshold: float,
+) -> torch.Tensor:
+    """Return bool tensor: 1 if robot's projected gravity matches upright within threshold."""
+    gravity = asset.data.projected_gravity_b
+    up = _UP_VEC.to(gravity.device)
+    error = torch.sum(torch.square(up - gravity), dim=-1)
+    return (error < orientation_threshold).float()
+
+
+# ---------------------------------------------------------------------------
 # SettleJointPositionAction — suppresses actions during early steps after fall
 # ---------------------------------------------------------------------------
 
@@ -74,6 +89,7 @@ class SettleJointPositionAction(JointPositionAction):
 
 def reset_fallen_or_standing(
     env: "ManagerBasedRlEnv",
+    env_ids: torch.Tensor,
     *,
     fall_probability: float = 0.6,
     fall_height: float = 0.8,
@@ -91,32 +107,32 @@ def reset_fallen_or_standing(
     asset: Entity = env.scene[asset_cfg.name]
     device = env.device
 
-    num_envs = env.num_envs
-    is_fallen = torch.rand(num_envs, device=device) < fall_probability
-    fallen_ids = torch.arange(num_envs, device=device)[is_fallen]
-    standing_ids = torch.arange(num_envs, device=device)[~is_fallen]
+    n = len(env_ids)
+    is_fallen = torch.rand(n, device=device) < fall_probability
+    fallen_rel_ids = env_ids[is_fallen]
+    standing_rel_ids = env_ids[~is_fallen]
 
     # ---- fallen ----
-    if fallen_ids.numel() > 0:
-        fallen_env_ids = fallen_ids.to(torch.int)
+    if fallen_rel_ids.numel() > 0:
+        fallen_env_ids = fallen_rel_ids.to(torch.int)
         n_fallen = len(fallen_env_ids)
 
         # Random quaternion orientation
         quat = _random_unit_quat(n_fallen, device)
 
         # Root position at fall height
-        origins = env.scene.env_origins[fallen_ids]
+        origins = env.scene.env_origins[fallen_rel_ids]
         root_pos = origins.clone()
         root_pos[:, 2] += fall_height
 
         # Random joint positions across full range
-        joint_limits = asset.data.joint_pos_limits[fallen_ids]  # (n_fallen, n_joints, 2)
+        joint_limits = asset.data.joint_pos_limits[fallen_rel_ids]  # (n_fallen, n_joints, 2)
         lo = joint_limits[:, :, 0]
         hi = joint_limits[:, :, 1]
         joint_pos = lo + (hi - lo) * torch.rand_like(lo)
 
         # Zero velocities
-        vel = torch.zeros(n_fallen, asset.num_dof - 6, device=device)
+        vel = torch.zeros(n_fallen, asset.num_joints, device=device)
 
         # Write root state
         asset.write_root_link_pose_to_sim(
@@ -132,24 +148,24 @@ def reset_fallen_or_standing(
         )
 
     # ---- standing ----
-    if standing_ids.numel() > 0:
-        standing_env_ids = standing_ids.to(torch.int)
+    if standing_rel_ids.numel() > 0:
+        standing_env_ids = standing_rel_ids.to(torch.int)
 
         # Default root state lifted 2 cm
-        default_root = asset.data.default_root_state[standing_ids].clone()
-        origins = env.scene.env_origins[standing_ids]
+        default_root = asset.data.default_root_state[standing_rel_ids].clone()
+        origins = env.scene.env_origins[standing_rel_ids]
         default_root[:, 0:3] += origins
         default_root[:, 2] += 0.02  # 2 cm z bump
 
         # Zero velocities
-        vel = torch.zeros(len(standing_ids), asset.num_dof - 6, device=device)
-        default_jpos = asset.data.default_joint_pos[standing_ids]
+        vel = torch.zeros(len(standing_env_ids), asset.num_joints, device=device)
+        default_jpos = asset.data.default_joint_pos[standing_rel_ids]
 
         asset.write_root_link_pose_to_sim(
             default_root[:, 0:7], env_ids=standing_env_ids
         )
         asset.write_root_link_velocity_to_sim(
-            torch.zeros(len(standing_ids), 6, device=device), env_ids=standing_env_ids
+            torch.zeros(len(standing_env_ids), 6, device=device), env_ids=standing_env_ids
         )
         asset.write_joint_state_to_sim(
             default_jpos[:, :asset.num_joints], vel, env_ids=standing_env_ids
@@ -158,7 +174,7 @@ def reset_fallen_or_standing(
     # Signal fallen envs to the settle action
     action = env.action_manager._terms.get("joint_pos")
     if isinstance(action, SettleJointPositionAction):
-        action._fallen_env_ids = fallen_ids.to(torch.int) if fallen_ids.numel() > 0 else None
+        action._fallen_env_ids = fallen_rel_ids.to(torch.int) if fallen_rel_ids.numel() > 0 else None
 
 
 def _random_unit_quat(n: int, device: torch.device) -> torch.Tensor:
@@ -210,17 +226,122 @@ class gated_posture_reward:
         self,
         env: "ManagerBasedRlEnv",
         std: dict[str, float],
-        orientation_threshold: float = 0.01,
+        orientation_threshold: float = 0.05,
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
     ) -> torch.Tensor:
         del std  # resolved in __init__
         asset: Entity = env.scene[asset_cfg.name]
-        gravity = asset.data.projected_gravity_b
-        up = _UP_VEC.to(gravity.device)
-        error = torch.sum(torch.square(up - gravity), dim=-1)
-        gate = (error < orientation_threshold).float()
+        gate = _is_upright(asset, orientation_threshold)
 
         current_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
         desired_pos = self.default_joint_pos[:, asset_cfg.joint_ids]
         error_sq = torch.square(current_pos - desired_pos)
         return gate * torch.exp(-torch.mean(error_sq / (self.std**2), dim=1))
+
+
+# ---------------------------------------------------------------------------
+# Energy-based termination (from getup task)
+# ---------------------------------------------------------------------------
+
+def energy_termination(
+    env: "ManagerBasedRlEnv",
+    threshold: float = float("inf"),
+    settle_steps: int = 0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Terminate when mechanical power exceeds threshold.
+
+    Power = sum(|actuator_force * joint_vel|). Skips the first settle_steps so
+    drop/settle dynamics don't trigger early termination.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    power = torch.sum(
+        torch.abs(
+            asset.data.actuator_force[:, asset_cfg.actuator_ids]
+            * asset.data.joint_vel[:, asset_cfg.joint_ids]
+        ),
+        dim=-1,
+    )
+    past_settle = env.episode_length_buf > settle_steps
+    return past_settle & (power > threshold)
+
+
+# ---------------------------------------------------------------------------
+# Success metric
+# ---------------------------------------------------------------------------
+
+class stand_success:
+    """Binary success metric: 1 once the robot has stood up, 0 otherwise."""
+
+    def __init__(self, cfg, env: "ManagerBasedRlEnv"):
+        self._stood_up = torch.zeros(env.num_envs, device=env.device)
+
+    def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+        if env_ids is None:
+            self._stood_up[:] = 0.0
+        else:
+            self._stood_up[env_ids] = 0.0
+
+    def __call__(
+        self,
+        env: "ManagerBasedRlEnv",
+        desired_height: float = 0.67,
+        height_tolerance: float = 0.02,
+        orientation_threshold: float = 0.05,
+        asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    ) -> torch.Tensor:
+        asset: Entity = env.scene[asset_cfg.name]
+        upright = _is_upright(asset, orientation_threshold)
+        height = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2].squeeze(-1)
+        height_ok = (desired_height - height) < height_tolerance
+        standing = upright * height_ok
+        self._stood_up = torch.maximum(self._stood_up, standing)
+        return self._stood_up
+
+
+def self_collision_cost(
+    env: "ManagerBasedRlEnv",
+    sensor_name: str = "self_collision",
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Penalty for self-collision (trunk contacted itself)."""
+    sensor = env.scene.sensors[sensor_name]
+    # Sum contact forces for trunk-trunk collision
+    contact_forces = sensor.data.force
+    # Any positive force in any slot counts as a collision
+    collision_mask = (contact_forces.abs().sum(dim=-1) > 0.0)
+    collision_force_magnitude = contact_forces.abs().sum(dim=-1)
+    # Penalise non-zero contact (avg across all slots if multi-slot)
+    return -collision_force_magnitude.mean(dim=-1)
+
+
+def reward_curriculum(
+    env: "ManagerBasedRlEnv",
+    env_ids: torch.Tensor,
+    reward_name: str,
+    stages: list[dict],
+) -> torch.Tensor:
+    """Update a reward term's weight based on training step stages."""
+    del env_ids  # Unused.
+    reward_term_cfg = env.reward_manager.get_term_cfg(reward_name)
+    for stage in stages:
+        if env.common_step_counter > stage["step"]:
+            reward_term_cfg.weight = stage["weight"]
+    return torch.tensor([reward_term_cfg.weight])
+
+
+def termination_curriculum(
+    env: "ManagerBasedRlEnv",
+    env_ids: torch.Tensor,
+    termination_name: str,
+    stages: list[dict],
+) -> torch.Tensor:
+    """Update a termination term's params based on training step stages."""
+    del env_ids  # Unused.
+    termination_term_cfg = env.termination_manager.get_term_cfg(termination_name)
+    for stage in stages:
+        if env.common_step_counter > stage["step"]:
+            for key, value in stage["params"].items():
+                setattr(termination_term_cfg.cfg, key, value)
+    # Return dummy tensor for logging
+    return torch.tensor([0.0])

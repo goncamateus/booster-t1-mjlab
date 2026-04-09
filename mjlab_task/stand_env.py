@@ -1,10 +1,11 @@
-"""Stand environment for Booster T1, adapted from mjlab_playground getup task."""
+"""Stand environment for Booster T1, aligned with mjlab_playground getup task."""
 import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import torch
 from mjlab.entity import Entity
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers import ObservationGroupCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
@@ -12,7 +13,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor.contact_sensor import ContactMatch, ContactSensor, ContactSensorCfg
-from mjlab.tasks.velocity import mdp
+from mjlab.envs import mdp
 from mjlab.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
@@ -39,7 +40,7 @@ def torso_height(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
-    return asset.data.body_com_pos_w[:, asset_cfg.body_ids, 2].mean(dim=1)
+    return asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2].squeeze(-1)
 
 
 def waist_height_reward(
@@ -48,7 +49,7 @@ def waist_height_reward(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
-    height = asset.data.body_com_pos_w[:, asset_cfg.body_ids, 2].mean(dim=1)
+    height = asset.data.body_link_pos_w[:, asset_cfg.body_ids, 2].squeeze(-1)
     clamped = torch.clamp(height, max=desired_height)
     return (torch.exp(clamped) - 1.0) / (math.exp(desired_height) - 1.0)
 
@@ -66,18 +67,17 @@ def feet_on_ground(
 
 class T1StandCfgGen:
 
+    # Per-joint posture std: tight hips (prevent splay), medium thighs, looser calves.
+    # Upper body (waist, shoulders, elbows, head) kept loose to avoid over-constraining.
     _POSTURE_STD = {
-        ".*_Hip_Roll": 0.08,
-        ".*_Hip_Yaw": 0.08,
-        ".*_Hip_Pitch": 0.12,
-        ".*_Knee_Pitch": 0.15,
-        ".*_Ankle_Pitch": 0.2,
-        ".*_Ankle_Roll": 0.2,
-        "AAHead_yaw.*": 0.15,
-        "Head_pitch.*": 0.15,
-        "Waist.*": 0.5,
-        ".*_Shoulder.*": 0.5,
-        ".*_Elbow.*": 0.5,
+        r".*_Hip_Roll": 0.08,
+        r".*_Hip_Yaw": 0.08,
+        r".*_Hip_Pitch": 0.12,
+        r".*_Knee_Pitch": 0.15,
+        r".*_Ankle_Pitch": 0.2,
+        r".*_Ankle_Roll": 0.2,
+        r"(AAHead_yaw|Head_pitch)": 0.15,
+        r"(Waist|.*_Shoulder.*|.*_Elbow.*)": 0.5,
     }
 
     # --- actor (policy) observations ---
@@ -114,15 +114,13 @@ class T1StandCfgGen:
     }
 
     reward_set = {
-        "pose",
-        "upright",
-        "body_ang_vel",
-        "soft_landing",
+        "orientation",
+        "posture",
         "dof_pos_limits",
         "action_rate_l2",
+        "joint_vel_l2",
         "feet_on_ground",
         "torso_height",
-        "posture",
         "waist_height",
     }
 
@@ -148,6 +146,15 @@ class T1StandCfgGen:
                 history_length=5,
                 reduce="netforce",
             ),
+            ContactSensorCfg(
+                name="self_collision",
+                primary=ContactMatch(mode="subtree", pattern="Trunk", entity="robot"),
+                secondary=ContactMatch(mode="subtree", pattern="Trunk", entity="robot"),
+                fields=("found", "force"),
+                reduce="none",
+                num_slots=1,
+                history_length=4,
+            ),
         )
 
     # ---- viewer ----
@@ -156,16 +163,11 @@ class T1StandCfgGen:
 
     # ---- actions ----
     def setup_actions(self):
-        """Replace JointPositionAction with SettleJointPositionAction for fall recovery.
-
-        We patch the config dict after creation so that the action's `build()` method
-        returns our custom action that suppresses actions during settle_steps.
-        """
+        """Use SettleJointPositionAction (local getup-style settle behaviour)."""
         action = stand_mdp.SettleJointPositionActionCfg(
             entity_name="robot",
             actuator_names=(".*",),
             scale=1.0,
-            use_default_offset=True,
         )
         # Add settle_steps to the config (the custom action reads it directly)
         action.settle_steps = 50  # 1.0s at 50Hz for T1
@@ -194,17 +196,14 @@ class T1StandCfgGen:
         self.cfg.events = {k: v for k, v in self.cfg.events.items() if v is not None}
 
     # ---- rewards ----
-    def _setup_pose_reward(self):
-        self.cfg.rewards["pose"].params["std_standing"] = {".*": 10}
-        self.cfg.rewards["pose"].params["std_walking"] = {".*": 0}
-        self.cfg.rewards["pose"].params["std_running"] = {".*": 0}
-        self.cfg.rewards["pose"].weight = 100
-
-    def _setup_body_rewards(self):
-        self.cfg.rewards["upright"].params["asset_cfg"].body_names = ("Trunk",)
-        self.cfg.rewards["upright"].weight = 10
-        self.cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("Trunk",)
-        self.cfg.rewards["body_ang_vel"].weight = -1
+    def _setup_orientation_reward(self):
+        self.cfg.rewards["orientation"] = RewardTermCfg(
+            func=stand_mdp.orientation_reward,
+            weight=1.0,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
 
     def _setup_torso_reward(self):
         self.cfg.rewards["torso_height"] = RewardTermCfg(
@@ -236,12 +235,24 @@ class T1StandCfgGen:
             params={"sensor_name": "feet_ground_contact"},
         )
 
+    def _setup_penalty_rewards(self):
+        # Self-collision cost - penalize trunk self-contacts
+        self.cfg.rewards["self_collision"] = RewardTermCfg(
+            func=stand_mdp.self_collision_cost,
+            weight=-0.1,
+            params={"sensor_name": "self_collision"},
+        )
+        self.cfg.rewards["joint_vel_l2"] = RewardTermCfg(
+            func=mdp.joint_vel_l2,
+            weight=0.0,  # Ramps to -0.01 via curriculum
+        )
+
     def _setup_posture_reward(self):
         self.cfg.rewards["posture"] = RewardTermCfg(
             func=stand_mdp.gated_posture_reward,
             weight=1.0,
             params={
-                "orientation_threshold": 0.01,
+                "orientation_threshold": 0.05,  # Matches getup gate (~3°)
                 "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
                 "std": self._POSTURE_STD,
             },
@@ -249,12 +260,12 @@ class T1StandCfgGen:
 
     def setup_rewards(self):
         for fn in (
-            self._setup_pose_reward,
-            self._setup_body_rewards,
+            self._setup_orientation_reward,
             self._setup_torso_reward,
             self._setup_waist_height_reward,
             self._setup_feet_on_ground_reward,
             self._setup_posture_reward,
+            self._setup_penalty_rewards,
         ):
             fn()
         # Keep only desired rewards
@@ -287,9 +298,12 @@ class T1StandCfgGen:
 
     # ---- terminations ----
     def setup_terminations(self):
-        max_tilt_rad = 0.12
         self.cfg.terminations = {
             "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
+            "energy": TerminationTermCfg(
+                func=stand_mdp.energy_termination,
+                params={"threshold": 1000.0, "settle_steps": 50},
+            ),
         }
 
     # ---- metrics (not supported in current mjlab) ----
@@ -307,7 +321,45 @@ class T1StandCfgGen:
         self.setup_terminations()
         self.setup_rewards()
         self.setup_metrics()
-        self.cfg.curriculum = {}
+        self.cfg.curriculum = {
+            "action_rate_weight": CurriculumTermCfg(
+                func=stand_mdp.reward_curriculum,
+                params={
+                    "reward_name": "action_rate_l2",
+                    "stages": [
+                        {"step": 0, "weight": -0.01},
+                        {"step": 600 * 24, "weight": -0.05},
+                        {"step": 900 * 24, "weight": -0.08},
+                        {"step": 1200 * 24, "weight": -0.1},
+                    ],
+                },
+            ),
+            "joint_vel_weight": CurriculumTermCfg(
+                func=stand_mdp.reward_curriculum,
+                params={
+                    "reward_name": "joint_vel_l2",
+                    "stages": [
+                        {"step": 0, "weight": 0.0},
+                        {"step": 900 * 24, "weight": -0.005},
+                        {"step": 1200 * 24, "weight": -0.008},
+                        {"step": 1500 * 24, "weight": -0.01},
+                    ],
+                },
+            ),
+            "energy_threshold": CurriculumTermCfg(
+                func=stand_mdp.termination_curriculum,
+                params={
+                    "termination_name": "energy",
+                    "stages": [
+                        {"step": 900 * 24, "params": {"threshold": 3000.0}},
+                        {"step": 1200 * 24, "params": {"threshold": 2000.0}},
+                        {"step": 1500 * 24, "params": {"threshold": 1500.0}},
+                        {"step": 1700 * 24, "params": {"threshold": 1000.0}},
+                        {"step": 2200 * 24, "params": {"threshold": 700.0}},
+                    ],
+                },
+            ),
+        }
         self.cfg.commands = {}
         if play:
             self.cfg.episode_length_s = 20.0
