@@ -342,6 +342,6 @@ def termination_curriculum(
     for stage in stages:
         if env.common_step_counter > stage["step"]:
             for key, value in stage["params"].items():
-                setattr(termination_term_cfg.cfg, key, value)
+                setattr(termination_term_cfg, key, value)
     # Return dummy tensor for logging
     return torch.tensor([0.0])
