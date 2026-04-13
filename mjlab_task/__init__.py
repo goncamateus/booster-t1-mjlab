@@ -1,5 +1,6 @@
 from mjlab.tasks.registry import register_mjlab_task
 
+from mjlab_task.getup_env import getup_env_cfg
 from mjlab_task.reach_env import reach_env_cfg
 from mjlab_task.rl_cfg import booster_t1_ppo_runner_cfg
 from mjlab_task.runner_with_video import VideoOnPolicyRunner
@@ -18,5 +19,13 @@ register_mjlab_task(
     env_cfg=reach_env_cfg(),
     play_env_cfg=reach_env_cfg(play=True),
     rl_cfg=booster_t1_ppo_runner_cfg(exp_name="T1-Reach-PPO", num_iterations=10000),
+    runner_cls=VideoOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="T1-Getup-v0",
+    env_cfg=getup_env_cfg(),
+    play_env_cfg=getup_env_cfg(play=True),
+    rl_cfg=booster_t1_ppo_runner_cfg(exp_name="T1-Getup-PPO", num_iterations=3000),
     runner_cls=VideoOnPolicyRunner,
 )
