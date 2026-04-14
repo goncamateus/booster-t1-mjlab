@@ -2,10 +2,10 @@ import os
 
 import wandb
 
-from mjlab.tasks.velocity.rl.runner import VelocityOnPolicyRunner
+from mjlab.rl import MjlabOnPolicyRunner
 
 
-class VideoOnPolicyRunner(VelocityOnPolicyRunner):
+class VideoOnPolicyRunner(MjlabOnPolicyRunner):
     """Runner that uploads recorded training videos to wandb."""
 
     def save(self, path: str, infos=None):

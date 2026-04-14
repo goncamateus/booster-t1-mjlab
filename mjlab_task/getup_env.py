@@ -22,6 +22,8 @@ from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
+from dataclasses import dataclass
+from mjlab.entity.entity import EntityCfg
 from . import getup_mdp
 from .getup_mdp import SettleRelativeJointPositionActionCfg
 from .robot_cfg import BoosterT1Cfg
@@ -43,11 +45,12 @@ _POSTURE_STD = {
 _FIELD_XML = os.path.join(os.path.dirname(__file__), "../assets/booster_t1/field.xml")
 
 
-def _merge_field_spec(spec: MjSpec) -> None:
-    field_spec = MjSpec.from_file(_FIELD_XML)
-    site = spec.worldbody.add_site(name="field_site", pos=(0, 0, 0))
-    spec.attach(field_spec, site=site)
-    spec.delete(site)
+@dataclass
+class FieldCfg(EntityCfg):
+    """Configuration for the RoboCup field."""
+
+    def __post_init__(self):
+        self.spec_fn = lambda: MjSpec.from_file(_FIELD_XML)
 
 
 def getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -83,7 +86,7 @@ def getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     }
 
     observations = {
-        "actor": ObservationGroupCfg(
+        "policy": ObservationGroupCfg(
             terms=actor_terms,
             concatenate_terms=True,
             enable_corruption=True,
@@ -143,6 +146,7 @@ def getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             domain_randomization=True,
             params={
                 "asset_cfg": SceneEntityCfg("robot", geom_names=(".*_collision",)),
+                "field": "geom_friction",
                 "operation": "abs",
                 "axes": [0],
                 "ranges": (0.3, 1.5),
@@ -151,15 +155,14 @@ def getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
     }
 
-    foot_geom_names = tuple(
-        f"{side}_foot{i}_collision" for side in ("left", "right") for i in range(1, 5)
-    )
+    foot_geom_names = ("left_foot_collision", "right_foot_collision")
     events["foot_friction_spin"] = EventTermCfg(
         mode="startup",
         func=mdp.randomize_field,
         domain_randomization=True,
         params={
             "asset_cfg": SceneEntityCfg("robot", geom_names=foot_geom_names),
+            "field": "geom_friction",
             "operation": "abs",
             "distribution": "log_uniform",
             "axes": [1],
@@ -173,6 +176,7 @@ def getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         domain_randomization=True,
         params={
             "asset_cfg": SceneEntityCfg("robot", geom_names=foot_geom_names),
+            "field": "geom_friction",
             "operation": "abs",
             "distribution": "log_uniform",
             "axes": [2],
@@ -278,11 +282,14 @@ def getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     cfg = ManagerBasedRlEnvCfg(
         scene=SceneCfg(
-            entities={"robot": BoosterT1Cfg()},
+            entities={
+                "robot": BoosterT1Cfg(),
+                "field": FieldCfg(),
+            },
             sensors=(self_collision_cfg,),
             num_envs=1,
-            extent=2.0,
-            spec_fn=_merge_field_spec,
+            extent=50.0,
+            spec_fn=None,
             terrain=None,
         ),
         observations=observations,
@@ -315,7 +322,7 @@ def getup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     )
 
     if play:
-        cfg.observations["actor"].enable_corruption = False
+        cfg.observations["policy"].enable_corruption = False
         cfg.episode_length_s = 20.0
 
     return cfg
