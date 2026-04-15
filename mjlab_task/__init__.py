@@ -26,6 +26,6 @@ register_mjlab_task(
     task_id="T1-Getup-v0",
     env_cfg=getup_env_cfg(),
     play_env_cfg=getup_env_cfg(play=True),
-    rl_cfg=booster_t1_ppo_runner_cfg(exp_name="T1-Getup-PPO", num_iterations=3000),
+    rl_cfg=booster_t1_ppo_runner_cfg(exp_name="T1-Getup-PPO", num_iterations=10000),
     runner_cls=VideoOnPolicyRunner,
 )
